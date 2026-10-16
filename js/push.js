@@ -5,7 +5,9 @@ import { hashStr } from './logic.js';
 export const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 export const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 export const notifSupported = () => 'Notification' in window && 'serviceWorker' in navigator;
-export const pushSupported = () => notifSupported() && 'PushManager' in window && !!VAPID_PUBLIC_KEY;
+let vapidKey = VAPID_PUBLIC_KEY;
+export const setVapidKey = (k) => { if (k) vapidKey = k; };
+export const pushSupported = () => notifSupported() && 'PushManager' in window && !!vapidKey;
 export const permission = () => (notifSupported() ? Notification.permission : 'unsupported');
 
 function b64ToBytes(b64) {
@@ -22,7 +24,7 @@ export async function enablePush() {
   if (!pushSupported()) return { ok: true, local: true };
   const reg = await navigator.serviceWorker.ready;
   let sub = await reg.pushManager.getSubscription();
-  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(VAPID_PUBLIC_KEY) });
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(vapidKey) });
   const json = sub.toJSON();
   return { ok: true, sub: json, key: 'p' + hashStr(json.endpoint).toString(36) };
 }

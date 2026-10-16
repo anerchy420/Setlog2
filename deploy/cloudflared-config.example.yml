@@ -1,0 +1,9 @@
+# コマンドでトンネルを作る場合の設定例（ダッシュボードで作る場合は不要）
+# 置き場所: Windows  C:\Users\<ユーザー名>\.cloudflared\config.yml
+#           Mac/Linux ~/.cloudflared/config.yml
+tunnel: setlog2
+credentials-file: /home/<ユーザー名>/.cloudflared/<トンネルID>.json
+ingress:
+  - hostname: setlog.example.com
+    service: http://localhost:8787
+  - service: http_status:404

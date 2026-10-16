@@ -89,7 +89,7 @@ export function hashStr(s) {
 // リアクションのスタンプを貼る位置（同じ人・同じ動画なら毎回同じ場所）
 export function stickerPos(seed) {
   const h = hashStr(seed);
-  return { x: 8 + (h % 70), y: 22 + ((h >>> 8) % 52), rot: ((h >>> 16) % 40) - 20 };
+  return { x: 6 + (h % 56), y: 22 + ((h >>> 8) % 52), rot: ((h >>> 16) % 40) - 20 }; // 右端は♡・返信ボタンなので避ける
 }
 
 // その日の枠（投稿がある時間＋今日なら今の時間）を古い順に

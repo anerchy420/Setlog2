@@ -1,11 +1,19 @@
 {
   "name": "setlog2",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
+  "description": "友だちと1時間ごとの2秒動画で同じ1日をシェアしてVlogに残すWebアプリ",
+  "engines": { "node": ">=22.13" },
   "scripts": {
-    "test": "node --test tests/*.test.mjs",
-    "start": "npx --yes http-server -p 8080 -c-1 .",
+    "server": "node --disable-warning=ExperimentalWarning server/server.mjs",
+    "backup": "node --disable-warning=ExperimentalWarning server/backup.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.mjs",
+    "demo": "npx --yes http-server -p 8080 -c-1 .",
     "vapid": "npx --yes web-push generate-vapid-keys",
     "notify": "node scripts/notify.mjs"
+  },
+  "dependencies": {
+    "web-push": "^3.6.7"
   }
 }

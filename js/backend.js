@@ -4,8 +4,150 @@ import { clipIdOf, genCode, MAX_MEMBERS, DEFAULT_NOTIFY, slotOf, pad2, REACTIONS
 
 export const isDemo = !FIREBASE_CONFIG || !FIREBASE_CONFIG.apiKey;
 
+// 使う順：Firebase設定あり → Firebase / 自前サーバー（server/server.mjs）が応答 → サーバー / どちらもなし → デモ
+export let mode = 'demo';
 export async function createBackend() {
-  return isDemo ? new DemoBackend() : createFirebase();
+  if (!isDemo) { mode = 'firebase'; return createFirebase(); }
+  try {
+    const r = await fetch('api/config', { cache: 'no-store' });
+    const cfg = r.ok && (await r.json());
+    if (cfg?.ok) { mode = 'server'; return new ServerBackend(cfg); }
+  } catch { /* サーバーなし */ }
+  return new DemoBackend();
+}
+
+// ---------------- 自前サーバー ----------------
+class ServerBackend {
+  constructor(cfg) {
+    this.kind = 'server';
+    this.cfg = cfg;
+    this.token = localStorage.getItem('setlog2.token');
+    this.uid = localStorage.getItem('setlog2.uid');
+    this.user = null;
+    this.watchers = new Set();
+  }
+  async api(method, p, body) {
+    const r = await fetch('api/' + p, {
+      method,
+      headers: { ...(this.token ? { Authorization: 'Bearer ' + this.token } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+      cache: 'no-store',
+    });
+    const j = await r.json().catch(() => null);
+    if (r.status === 401 && this.token) { this.clear(); this.authCb?.(null); }
+    if (!r.ok) { const e = new Error(j?.error || `通信エラー（${r.status}）`); e.status = r.status; throw e; }
+    return j;
+  }
+  clear() {
+    this.token = this.uid = null;
+    this.user = null;
+    localStorage.removeItem('setlog2.token');
+    localStorage.removeItem('setlog2.uid');
+    this.es?.close();
+    this.es = null;
+  }
+  setAuth({ uid, token }) {
+    this.token = token; this.uid = uid;
+    localStorage.setItem('setlog2.token', token);
+    localStorage.setItem('setlog2.uid', uid);
+  }
+  onAuth(cb) {
+    this.authCb = cb;
+    (async () => {
+      if (!this.token) return cb(null);
+      try {
+        const me = await this.api('GET', 'me');
+        this.uid = me.uid;
+        this.user = { uid: me.uid, anonymous: true, provider: 'server' };
+        this.connect();
+        cb(this.user);
+      } catch (e) {
+        if (e.status === 401) cb(null);
+        else { emitErr(e); setTimeout(() => this.onAuth(cb), 5000); } // サーバーが止まっているときは再試行
+      }
+    })();
+    return () => {};
+  }
+  async signInAnon(signupCode) {
+    this.setAuth(await this.api('POST', 'signup', { signupCode }));
+    this.onAuth(this.authCb);
+  }
+  async redeemTransfer(code) {
+    this.setAuth(await this.api('POST', 'transfer/redeem', { code }));
+    this.onAuth(this.authCb);
+  }
+  issueTransfer() { return this.api('POST', 'transfer'); }
+  async signInGoogle() { throw new Error('このサーバーでは引き継ぎコードを使ってください'); }
+  async signOut() {
+    await this.api('POST', 'logout').catch(() => {});
+    this.clear();
+    this.authCb?.(null);
+  }
+
+  // リアルタイム更新：サーバーから「変わった」と届いたら該当の購読だけ取り直す
+  connect() {
+    this.es?.close();
+    const es = new EventSource('api/events?token=' + encodeURIComponent(this.token));
+    this.es = es;
+    let wasDown = false;
+    es.onmessage = (m) => {
+      const ev = JSON.parse(m.data);
+      for (const w of this.watchers) if (w.match(ev)) w.refresh();
+    };
+    es.onerror = () => { wasDown = true; };
+    es.onopen = () => { if (wasDown) { wasDown = false; for (const w of this.watchers) w.refresh(); } };
+  }
+  watch(match, load, cb) {
+    let t = 0, alive = true;
+    const w = {
+      match,
+      refresh: () => {
+        clearTimeout(t);
+        t = setTimeout(() => load().then((v) => { if (alive) cb(v); }).catch((e) => { if (e.status !== 401) emitErr(e); }), 60);
+      },
+    };
+    this.watchers.add(w);
+    load().then((v) => { if (alive) cb(v); }).catch((e) => emitErr(e));
+    return () => { alive = false; this.watchers.delete(w); };
+  }
+  watchProfile(cb) { return this.watch((e) => e.type === 'profile', () => this.api('GET', 'me').then((m) => m.profile), cb); }
+  saveProfile(p) { return this.api('PATCH', 'me', p.push ? { ...p, push: undefined } : p); }
+  async savePush(key, sub, tz) { return this.api('PUT', 'push/' + key, { sub, tz }); }
+  testPush() { return this.api('POST', 'push/test'); }
+
+  watchLogs(cb) { return this.watch((e) => e.type === 'logs', () => this.api('GET', 'logs'), cb); }
+  async createLog({ name, emoji, color }) { return (await this.api('POST', 'logs', { name, emoji, color })).id; }
+  previewCode(code) { return this.api('GET', 'codes/' + encodeURIComponent(code)); }
+  async joinByCode(code) { return (await this.api('POST', 'join', { code })).id; }
+  updateLog(id, patch) { return this.api('PATCH', 'logs/' + id, patch); }
+  setMyInfo() { return Promise.resolve(); } // サーバーがプロフィール保存時に反映する
+  setMute(id, on) { return this.api('POST', `logs/${id}/mute`, { on }); }
+  leaveLog(id) { return this.api('POST', `logs/${id}/leave`); }
+  removeMember(id, uid) { return this.api('POST', `logs/${id}/kick`, { uid }); }
+  async regenCode(id) { return (await this.api('POST', `logs/${id}/code`)).code; }
+
+  watchClips(logId, from, to, cb) {
+    return this.watch((e) => e.type === 'clips' && e.log === logId && e.date >= from && e.date <= to, () => this.api('GET', `logs/${logId}/clips?from=${from}&to=${to}`), cb);
+  }
+  dayInfo(logId, date) { return this.api('GET', `logs/${logId}/day/${date}`); }
+  async getMedia(logId, clipId) {
+    const r = await fetch(`api/logs/${logId}/clips/${clipId}/media`, { headers: { Authorization: 'Bearer ' + this.token } });
+    if (!r.ok) return null;
+    const blob = await r.blob();
+    return { mime: blob.type, data: URL.createObjectURL(blob) };
+  }
+  async postClip(logId, clip, media) {
+    return (await this.api('POST', `logs/${logId}/clips`, { ...clip, media: media.data })).id;
+  }
+  deleteClip(logId, clipId) { return this.api('DELETE', `logs/${logId}/clips/${clipId}`); }
+  react(logId, clipId, emoji) { return this.api('PUT', `logs/${logId}/clips/${clipId}/react`, { emoji }); }
+
+  watchMessages(logId, cb, limit = 150) {
+    return this.watch((e) => e.type === 'messages' && e.log === logId, () => this.api('GET', `logs/${logId}/messages?limit=${limit}`), cb);
+  }
+  sendMessage(logId, m) { return this.api('POST', `logs/${logId}/messages`, m); }
+  deleteMessage(logId, id) { return this.api('DELETE', `logs/${logId}/messages/${id}`); }
+  poke(logId, to) { return this.api('POST', `logs/${logId}/pokes`, { to }); }
 }
 
 const emitErr = (e) => { console.error(e); window.dispatchEvent(new CustomEvent('backend-error', { detail: e })); };

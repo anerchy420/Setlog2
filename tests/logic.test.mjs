@@ -54,7 +54,7 @@ test('招待コード', () => {
 test('スタンプの位置は同じ入力なら同じ', () => {
   assert.deepEqual(stickerPos('a1'), stickerPos('a1'));
   const p = stickerPos('zzz');
-  assert.ok(p.x >= 8 && p.x < 78 && p.y >= 22 && p.y < 74 && p.rot >= -20 && p.rot < 20);
+  assert.ok(p.x >= 6 && p.x < 62 && p.y >= 22 && p.y < 74 && p.rot >= -20 && p.rot < 20);
 });
 
 const C = (uid, date, slot, extra = {}) => ({ id: clipIdOf(date, slot, uid), uid, date, slot, createdAt: 0, ...extra });

@@ -1,11 +1,13 @@
 // 画面とイベント処理
 import * as L from './logic.js';
-import { createBackend, isDemo } from './backend.js';
+import { createBackend } from './backend.js';
 import { Camera } from './camera.js';
 import { VlogPlayer, FILTERS, canExportVideo } from './vlog.js';
-import { enablePush, currentPushKey, showLocal, permission, pushSupported, notifSupported, isIOS, isStandalone } from './push.js';
+import { enablePush, currentPushKey, showLocal, permission, pushSupported, notifSupported, isIOS, isStandalone, setVapidKey } from './push.js';
 
 const B = await createBackend();
+const isDemo = B.kind === 'demo';
+if (B.kind === 'server') setVapidKey(B.cfg.vapidPublicKey);
 
 const st = {
   user: undefined, // undefined=確認中 / null=未ログイン
@@ -22,6 +24,7 @@ const ui = {
   vlog: { layout: 'timeline', aspect: '9:16', filter: 'none', names: true, captions: true, clipAudio: true, speed: 1, bgm: null },
 };
 const subs = new Map();
+let rafId = 0; // 描画の予約
 const A = {}; // data-a="名前" のボタンを押したときの処理
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -213,7 +216,6 @@ window.addEventListener('hashchange', () => {
   window.scrollTo(0, 0);
 });
 
-let rafId = 0;
 function schedule() {
   if (rafId) return;
   rafId = requestAnimationFrame(() => { rafId = 0; render(); });
@@ -264,8 +266,9 @@ VIEWS.welcome = () => ({
       <div class="feat" style="margin-top:10px"><span class="ic">👯</span><div><b>最大${L.MAX_MEMBERS}人のログ</b><div class="small muted">同じ時間のみんなを分割画面で。リアクションとチャットも。</div></div></div>
       <div class="feat" style="margin-top:10px"><span class="ic">🎬</span><div><b>Vlogを自動で</b><div class="small muted">縦型・分割・フィルター・BGMを選んで書き出し、そのまま投稿。</div></div></div>
     </div>
+    ${B.kind === 'server' && B.cfg.signupCode ? '<label class="f">合言葉（管理者から聞いてください）<input id="signup-code" autocomplete="off"></label>' : ''}
     <button class="btn accent big block" data-a="start">はじめる</button>
-    ${isDemo ? '<p class="small muted center">デモモード：この端末だけで動きます。架空の友だちが投稿しています。</p>' : '<button class="btn block" data-a="google">Googleでログイン（機種変更しても引き継げる）</button>'}
+    ${isDemo ? '<p class="small muted center">デモモード：この端末だけで動きます。架空の友だちが投稿しています。</p>' : B.kind === 'server' ? '<button class="btn block" data-a="redeem">引き継ぎコードでログイン（前の端末から移る）</button>' : '<button class="btn block" data-a="google">Googleでログイン（機種変更しても引き継げる）</button>'}
   </div>`,
 });
 
@@ -921,7 +924,7 @@ VIEWS.settings = () => {
       </div>
       <h3>表示</h3><div class="card"><div class="seg">${[['auto', '自動'], ['light', 'ライト'], ['dark', 'ダーク']].map(([k, v]) => `<button class="${(localStorage.getItem('theme') || 'auto') === k ? 'on' : ''}" data-a="theme" data-v="${k}">${v}</button>`).join('')}</div></div>
       <h3>アカウント</h3><div class="card">
-        ${isDemo ? '<p class="small">デモモード：データはこの端末のブラウザ内だけにあります。</p><button class="btn block danger" data-a="demo-reset">デモのデータを消してやり直す</button>' : acct?.anonymous ? `<p class="small">この端末だけのアカウントです。Googleと連携すると、機種変更やほかの端末でも同じアカウントで使えます。</p><button class="btn block primary" data-a="google">Googleと連携する</button>` : `<p class="small">${esc(acct?.email || '')} でログイン中</p>`}
+        ${isDemo ? '<p class="small">デモモード：データはこの端末のブラウザ内だけにあります。</p><button class="btn block danger" data-a="demo-reset">デモのデータを消してやり直す</button>' : B.kind === 'server' ? '<p class="small">機種変更や、PC・タブレットでも使うときは、引き継ぎコードを発行して新しい端末で入力します（15分有効・この端末もそのまま使えます）。</p><button class="btn block primary" data-a="transfer">引き継ぎコードを発行</button>' : acct?.anonymous ? `<p class="small">この端末だけのアカウントです。Googleと連携すると、機種変更やほかの端末でも同じアカウントで使えます。</p><button class="btn block primary" data-a="google">Googleと連携する</button>` : `<p class="small">${esc(acct?.email || '')} でログイン中</p>`}
         ${isDemo ? '' : '<button class="btn block ghost" data-a="signout" style="margin-top:8px">ログアウト</button>'}
       </div>
       <p class="small muted center" style="margin:18px 0 30px">setlog2 · 動画は友だちのログの中だけで共有されます</p>`,
@@ -939,7 +942,7 @@ A['sheet-close'] = () => closeSheet();
 A.go = (el) => go(el.dataset.to);
 A.start = async (el) => {
   el.disabled = true;
-  try { await B.signInAnon(); } catch (e) { toast(e.message); el.disabled = false; }
+  try { await B.signInAnon($('#signup-code')?.value.trim()); } catch (e) { toast(e.message); el.disabled = false; }
 };
 A.google = async () => {
   try {
@@ -948,7 +951,26 @@ A.google = async () => {
     schedule();
   } catch (e) { if (e.code !== 'auth/popup-closed-by-user') toast(e.message); }
 };
-A.signout = async () => { if (await confirmSheet('ログアウトしますか？', 'ログアウト', true, B.user?.anonymous ? 'Googleと連携していないアカウントは、ログアウトすると戻れません。' : '')) B.signOut(); };
+A.signout = async () => {
+  const warn = B.kind === 'server' ? '先に「引き継ぎコードを発行」して控えておかないと、このアカウントに戻れません。' : B.user?.anonymous ? 'Googleと連携していないアカウントは、ログアウトすると戻れません。' : '';
+  if (await confirmSheet('ログアウトしますか？', 'ログアウト', true, warn)) B.signOut();
+};
+A.transfer = async () => {
+  try {
+    const r = await B.issueTransfer();
+    openSheet(`<h2>引き継ぎコード</h2><p class="small muted" style="margin-top:-6px">新しい端末で setlog2 を開き「引き継ぎコードでログイン」に入力してください。${L.fmtClock(r.expires)}まで有効・1回だけ使えます。</p>
+      <div class="code">${esc(r.code)}</div><button class="btn block" data-a="sheet-close">閉じる</button>`);
+  } catch (e) { toast(e.message); }
+};
+A.redeem = () => {
+  openSheet(`<h2>引き継ぎコードでログイン</h2><p class="small muted" style="margin-top:-6px">前の端末の「設定 → 引き継ぎコードを発行」で表示された8文字</p>
+    <input id="rd-code" class="code" style="font-size:24px" maxlength="12" autocapitalize="characters" autocomplete="off">
+    <button class="btn accent block big" style="margin-top:12px" id="rd-ok">ログイン</button>`);
+  setTimeout(() => $('#rd-code')?.focus(), 80);
+  $('#rd-ok').onclick = async () => {
+    try { await B.redeemTransfer($('#rd-code').value); closeSheet(); toast('ログインしました'); } catch (e) { toast(e.message); }
+  };
+};
 A['demo-info'] = () => openSheet(`<h2>デモモード</h2><p>Firebaseが未設定のため、この端末だけで動いています。「ねむい組」の友だちは架空で、投稿するとリアクションやチャットが返ってきます。</p><p class="small muted">別のタブで <code>?demoUser=b</code> を付けて開くと、別の人として同じデータを操作できます。</p><button class="btn block" data-a="sheet-close">閉じる</button>`);
 A['demo-reset'] = async () => {
   if (!(await confirmSheet('デモのデータを消しますか？', '消す', true))) return;
@@ -1013,7 +1035,11 @@ A['enable-notify'] = async () => {
       toast(r.reason === 'ios-install' ? 'ホーム画面に追加してから開いてください' : r.reason === 'denied' ? '通知が許可されませんでした' : 'このブラウザは通知に対応していません');
       return;
     }
-    if (r.sub) {
+    if (r.sub && B.kind === 'server') {
+      st.pushKey = r.key;
+      await B.savePush(r.key, r.sub, Intl.DateTimeFormat().resolvedOptions().timeZone);
+      toast('通知をオンにしました');
+    } else if (r.sub) {
       st.pushKey = r.key;
       await B.saveProfile({ push: { ...(st.profile.push || {}), [r.key]: { ...r.sub, ua: navigator.userAgent.slice(0, 120), at: Date.now() } }, tz: Intl.DateTimeFormat().resolvedOptions().timeZone });
       toast('通知をオンにしました');
@@ -1021,7 +1047,7 @@ A['enable-notify'] = async () => {
     schedule();
   } catch (e) { toast('通知を設定できませんでした：' + e.message); }
 };
-A['test-notify'] = () => showLocal('📸 テスト', 'こんな感じで毎時お知らせします', { url: './#cam' }).then((ok) => toast(ok ? '送りました' : '通知を出せませんでした'));
+A['test-notify'] = () => B.kind === 'server' && st.pushKey ? B.testPush().then((r) => toast(`${r.devices}台の端末に送りました`)).catch((e) => toast(e.message)) : showLocal('📸 テスト', 'こんな感じで毎時お知らせします', { url: './#cam' }).then((ok) => toast(ok ? '送りました' : '通知を出せませんでした'));
 A.theme = (el) => { localStorage.setItem('theme', el.dataset.v); applyTheme(); schedule(); };
 
 // ログ
