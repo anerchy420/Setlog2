@@ -1,0 +1,109 @@
+rules_version = '2';
+// setlog2 のアクセス制御
+// ・ログ（グループ）の中身は、そのログのメンバーだけが読み書きできる
+// ・参加は招待コードを知っている人だけ（コードの一覧は取得不可）
+// ・動画は1時間の枠ごとに1人1本（ドキュメントIDを「日付_時_ユーザー」に固定し、上書きは禁止）
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function me() { return request.auth.uid; }
+    function logOf(logId) { return get(/databases/$(database)/documents/logs/$(logId)).data; }
+    function isMember(logId) { return signedIn() && me() in logOf(logId).members; }
+    function onlyKeys(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+    function onlyMyKey(field) {
+      return request.resource.data.get(field, {}).diff(resource.data.get(field, {})).affectedKeys().hasOnly([me()]);
+    }
+    function okName(v) { return v is string && v.size() > 0 && v.size() <= 20; }
+
+    // プロフィール・通知設定・プッシュ購読（本人だけ）
+    match /users/{userId} {
+      allow read, write: if signedIn() && me() == userId;
+    }
+
+    // 招待コード → ログID（コードを知っていれば1件だけ読める）
+    match /codes/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create, update: if signedIn() && code.size() == 6 && logOf(request.resource.data.logId).owner == me();
+      allow delete: if signedIn() && logOf(resource.data.logId).owner == me();
+    }
+
+    match /logs/{logId} {
+      allow read: if signedIn() && me() in resource.data.members;
+      allow create: if signedIn()
+        && request.resource.data.owner == me()
+        && request.resource.data.members == [me()]
+        && okName(request.resource.data.name)
+        && request.resource.data.code is string;
+
+      // メンバー：名前・アイコン・色の変更、自分の表示情報とミュート、自分の退出
+      function memberUpdate() {
+        return me() in resource.data.members
+          && onlyKeys(['name', 'emoji', 'color', 'info', 'muted', 'members'])
+          && okName(request.resource.data.name)
+          && onlyMyKey('info') && onlyMyKey('muted')
+          && (request.resource.data.members == resource.data.members
+              || request.resource.data.members == resource.data.members.removeAll([me()]));
+      }
+      // 作成者：上記に加えて、コード変更・参加受付の切替・メンバーを外す
+      function ownerUpdate() {
+        return resource.data.owner == me()
+          && onlyKeys(['name', 'emoji', 'color', 'info', 'muted', 'members', 'code', 'locked'])
+          && okName(request.resource.data.name)
+          && resource.data.members.hasAll(request.resource.data.members);
+      }
+      // 招待コードで参加（自分を1人だけ追加）
+      function joinUpdate() {
+        return !(me() in resource.data.members)
+          && onlyKeys(['members', 'info', 'joinCode'])
+          && request.resource.data.joinCode == resource.data.code
+          && resource.data.get('locked', false) == false
+          && request.resource.data.members == resource.data.members.concat([me()])
+          && request.resource.data.members.size() <= 20
+          && onlyMyKey('info');
+      }
+      allow update: if signedIn() && (memberUpdate() || ownerUpdate() || joinUpdate());
+
+      match /clips/{clipId} {
+        allow read: if isMember(logId);
+        allow create: if isMember(logId)
+          && request.resource.data.uid == me()
+          && clipId == request.resource.data.date + '_' + request.resource.data.slot + '_' + me()
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.reactions == {}
+          && request.resource.data.thumb.size() < 80000
+          && request.resource.data.get('caption', '').size() <= 30;
+        // リアクション（自分の分だけ）
+        allow update: if isMember(logId)
+          && onlyKeys(['reactions', 'reactedAt', 'lastReact'])
+          && onlyMyKey('reactions')
+          && (!('lastReact' in request.resource.data) || request.resource.data.lastReact == resource.data.get('lastReact', null) || request.resource.data.lastReact.uid == me());
+        allow delete: if signedIn() && resource.data.uid == me();
+      }
+      // 動画本体（一覧を軽くするため別ドキュメント）
+      match /media/{clipId} {
+        allow read: if isMember(logId);
+        allow create: if isMember(logId)
+          && request.resource.data.uid == me()
+          && clipId.matches('.*_' + me())
+          && request.resource.data.data.size() < 1000000;
+        allow delete: if signedIn() && resource.data.uid == me();
+      }
+      match /messages/{msgId} {
+        allow read: if isMember(logId);
+        allow create: if isMember(logId)
+          && request.resource.data.uid == me()
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.get('text', '').size() <= 500;
+        allow delete: if signedIn() && resource.data.uid == me();
+      }
+      // つつく（通知サーバーだけが読む）
+      match /pokes/{pokeId} {
+        allow create: if isMember(logId)
+          && request.resource.data.from == me()
+          && request.resource.data.to in logOf(logId).members
+          && request.resource.data.createdAt == request.time;
+      }
+    }
+  }
+}

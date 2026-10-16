@@ -1,145 +1,113 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  e1rm, weightForReps, entryStats, workoutStats, lastEntryFor, records, setPRs, detectPRs,
-  suggestNext, platesFor, warmupSets, weekStartOf, streakWeeks, weeklySeries, partSets,
-  parseNum, toCSV, workoutToText, workoutToTemplate, newWorkout, normalizeState, convertUnits,
-  fmtDuration, movingAvg, DEFAULT_EXERCISES,
+  slotOf, clipIdOf, localParts, isActiveHour, hourlyDue, remindDue, genCode, normCode, stickerPos,
+  slotsOfDay, groupBySlot, dayCounts, streakDays, reactionSummary, vlogSegments, vlogDuration, gridDims,
+  addDaysKey, fmtAgo, cleanName, dateKey,
 } from '../js/logic.js';
 
-const exMap = Object.fromEntries(DEFAULT_EXERCISES.map((e) => [e.id, e]));
-const BENCH = DEFAULT_EXERCISES.find((e) => e.name === 'ベンチプレス').id;
-const PULL = DEFAULT_EXERCISES.find((e) => e.name === '懸垂').id;
-const S = (w, r, k = 'n', done = true, rpe = null) => ({ w, r, k, done, rpe });
-const W = (id, day, entries) => ({ id, name: '', note: '', start: new Date(2026, 9, day, 18).getTime(), end: new Date(2026, 9, day, 19).getTime(), entries });
-
-test('推定1RM（Epley）', () => {
-  assert.equal(e1rm(100, 1), 100);
-  assert.equal(Math.round(e1rm(100, 10) * 10) / 10, 133.3);
-  assert.equal(e1rm(0, 5), 0);
-  assert.equal(Math.round(weightForReps(e1rm(80, 8), 8) * 1000) / 1000, 80);
+test('撮影枠とID', () => {
+  const t = new Date(2026, 9, 16, 20, 7).getTime();
+  assert.deepEqual(slotOf(t), { date: '2026-10-16', hour: 20, slot: '20', minute: 7 });
+  assert.equal(slotOf(new Date(2026, 0, 2, 9, 0).getTime()).slot, '09');
+  assert.equal(clipIdOf('2026-10-16', '09', 'abc'), '2026-10-16_09_abc');
 });
 
-test('集計：ウォームアップと未完了は除外', () => {
-  const en = { exId: BENCH, sets: [S(40, 10, 'w'), S(80, 8), S(80, 7), S(85, 5, 'n', false)] };
-  const st = entryStats(en, exMap[BENCH]);
-  assert.equal(st.sets, 2);
-  assert.equal(st.volume, 80 * 15);
-  assert.equal(st.topW, 80);
-  assert.equal(st.bestSet.r, 8);
-  const ws = workoutStats(W('a', 1, [en, { exId: PULL, sets: [S(null, 10)] }]), exMap);
-  assert.equal(ws.sets, 3);
-  assert.deepEqual(ws.parts, { 胸: 2, 背中: 1 });
-  assert.equal(ws.duration, 3600000);
+test('タイムゾーン指定の分解（通知サーバー用）', () => {
+  const t = Date.UTC(2026, 9, 16, 11, 5); // 日本時間 20:05
+  assert.deepEqual(localParts(t, 'Asia/Tokyo'), { date: '2026-10-16', hour: 20, slot: '20', minute: 5 });
+  assert.equal(localParts(Date.UTC(2026, 9, 16, 15, 30), 'Asia/Tokyo').date, '2026-10-17');
 });
 
-test('前回の記録と自己ベスト', () => {
-  const hist = [
-    W('a', 1, [{ exId: BENCH, sets: [S(80, 8), S(80, 8)] }]),
-    W('b', 5, [{ exId: BENCH, sets: [S(85, 5)] }]),
-    W('c', 3, [{ exId: PULL, sets: [S(null, 8)] }]),
-  ];
-  assert.equal(lastEntryFor(hist, BENCH).workout.id, 'b');
-  assert.equal(lastEntryFor(hist, BENCH, hist[1].start).workout.id, 'a');
-  const rec = records(hist, BENCH, exMap[BENCH]);
-  assert.equal(rec.weight, 85);
-  assert.equal(rec.count, 2);
-  assert.equal(rec.repMax[8].w, 80);
-  assert.deepEqual(setPRs(rec, S(80, 10), exMap[BENCH]), ['e1rm']);
-  assert.deepEqual(setPRs(rec, S(87.5, 1), exMap[BENCH]), ['weight']);
-  assert.deepEqual(setPRs(rec, S(60, 5), exMap[BENCH]), []);
-  const now = W('d', 8, [{ exId: BENCH, sets: [S(90, 4)] }, { exId: PULL, sets: [S(null, 10)] }]);
-  const prs = detectPRs([...hist, now], now, exMap);
-  assert.deepEqual(prs.map((p) => p.type).sort(), ['e1rm', 'reps', 'weight']);
-  // 初回は自己ベスト扱いしない
-  assert.deepEqual(detectPRs([hist[0]], hist[0], exMap), []);
+test('通知する時間帯（日またぎ対応）', () => {
+  assert.ok(isActiveHour(8, 8, 23));
+  assert.ok(isActiveHour(23, 8, 23));
+  assert.ok(!isActiveHour(7, 8, 23));
+  assert.ok(isActiveHour(1, 22, 2));
+  assert.ok(!isActiveHour(12, 22, 2));
 });
 
-test('次回の提案：ダブルプログレッション', () => {
-  const up = suggestNext([S(60, 12), S(60, 12), S(60, 12)], { min: 8, max: 12, inc: 2.5 });
-  assert.ok(up.up);
-  assert.deepEqual(up.sets[0], { w: 62.5, r: 8 });
-  const keep = suggestNext([S(60, 12), S(60, 10)], { min: 8, max: 12 });
-  assert.deepEqual(keep.sets, [{ w: 60, r: 12 }, { w: 60, r: 11 }]);
-  const rpe = suggestNext([S(100, 5, 'n', true, 7), S(100, 5, 'n', true, 6)], { inc: 5 });
-  assert.equal(rpe.sets[0].w, 105);
-  assert.equal(suggestNext([S(100, 5, 'n', true, 9)], {}).reason, '前回と同じ');
-  assert.equal(suggestNext([S(20, 10, 'w')], {}), null);
-  const bw = suggestNext([S(null, 10)], { max: 10, type: 'reps' });
-  assert.equal(bw.sets[0].r, 11);
+test('毎時通知とリマインドの判定', () => {
+  const p = { date: '2026-10-16', hour: 20, slot: '20', minute: 3 };
+  assert.ok(hourlyDue({}, null, p));
+  assert.ok(!hourlyDue({}, '2026-10-16_20', p), '同じ時間に2回送らない');
+  assert.ok(!hourlyDue({ hourly: false }, null, p));
+  assert.ok(!hourlyDue({ start: 21, end: 23 }, null, p));
+  assert.ok(!hourlyDue({}, null, { ...p, minute: 40 }), '30分を過ぎたら送らない');
+  const q = { ...p, minute: 47 };
+  assert.ok(remindDue({}, null, q, false));
+  assert.ok(!remindDue({}, null, q, true), '撮影済みなら送らない');
+  assert.ok(!remindDue({ remind: false }, null, q, false));
+  assert.ok(!remindDue({}, null, p, false), '45分より前は送らない');
 });
 
-test('プレート計算とウォームアップ', () => {
-  const p = platesFor(102.5, 20, [25, 20, 15, 10, 5, 2.5, 1.25]);
-  assert.deepEqual(p.side, [25, 15, 1.25]);
-  assert.equal(p.achieved, 102.5);
-  assert.equal(p.rest, 0);
-  const q = platesFor(101, 20, [20, 10, 5]);
-  assert.equal(q.achieved, 100);
-  assert.equal(q.rest, 1);
-  assert.deepEqual(platesFor(15, 20, [20]).side, []);
-  assert.deepEqual(warmupSets(100, 20, 2.5), [{ w: 20, r: 10 }, { w: 40, r: 5 }, { w: 60, r: 3 }, { w: 80, r: 2 }]);
-  assert.deepEqual(warmupSets(30, 20, 2.5), [{ w: 20, r: 10 }, { w: 22.5, r: 2 }]);
-  assert.deepEqual(warmupSets(20, 20), []);
+test('招待コード', () => {
+  let i = 0;
+  const seq = [0, 0.999, 0.5, 0.1, 0.2, 0.3];
+  const c = genCode(6, () => seq[i++]);
+  assert.equal(c.length, 6);
+  assert.match(genCode(), /^[A-HJ-NP-Z2-9]{6}$/);
+  assert.equal(normCode(' ab c-12 3 '), 'ABC123');
+  assert.equal(normCode('https://x.github.io/setlog2/?join=xy7k2p#home'), 'XY7K2P');
 });
 
-test('週と継続', () => {
-  const thu = new Date(2026, 9, 15, 12).getTime(); // 2026/10/15 木
-  assert.equal(new Date(weekStartOf(thu, 1)).getDate(), 12);
-  assert.equal(new Date(weekStartOf(thu, 0)).getDate(), 11);
-  const hist = [W('a', 1, []), W('b', 6, []), W('c', 8, [])];
-  assert.equal(streakWeeks(hist, 1, thu), 2); // 今週なし・先週(5-11)あり・先々週(9/28-10/4)あり
-  assert.equal(streakWeeks(hist, 2, thu), 1); // 先週は2回
-  assert.equal(streakWeeks(hist, 3, thu), 0);
-  const ws = weeklySeries(hist, exMap, 3, thu);
-  assert.deepEqual(ws.map((w) => w.count), [1, 2, 0]);
-  const ps = partSets([W('a', 6, [{ exId: BENCH, sets: [S(80, 5)] }])], exMap, 0, Infinity);
-  assert.equal(ps['胸'], 1);
-  assert.equal(ps['脚'], 0);
+test('スタンプの位置は同じ入力なら同じ', () => {
+  assert.deepEqual(stickerPos('a1'), stickerPos('a1'));
+  const p = stickerPos('zzz');
+  assert.ok(p.x >= 8 && p.x < 78 && p.y >= 22 && p.y < 74 && p.rot >= -20 && p.rot < 20);
 });
 
-test('入力と表示', () => {
-  assert.equal(parseNum('６２．５'), 62.5);
-  assert.equal(parseNum('62,5'), 62.5);
-  assert.equal(parseNum(''), null);
-  assert.equal(parseNum('abc'), null);
-  assert.equal(fmtDuration(3725000), '1:02:05');
-  assert.equal(fmtDuration(65000), '1:05');
-  assert.equal(fmtDuration(3725000, false), '1時間2分');
+const C = (uid, date, slot, extra = {}) => ({ id: clipIdOf(date, slot, uid), uid, date, slot, createdAt: 0, ...extra });
+
+test('その日の枠・集計', () => {
+  const now = new Date(2026, 9, 16, 20, 10).getTime();
+  const cs = [C('a', '2026-10-16', '09'), C('b', '2026-10-16', '09'), C('a', '2026-10-16', '15'), C('a', '2026-10-15', '22')];
+  assert.deepEqual(slotsOfDay(cs, '2026-10-16', now), ['09', '15', '20']);
+  assert.deepEqual(slotsOfDay(cs, '2026-10-15', now), ['22']);
+  assert.equal(groupBySlot(cs)['09'].length, 2);
+  assert.deepEqual(dayCounts(cs, 'a')['2026-10-16'], { total: 3, mine: 2 });
 });
 
-test('書き出し・テンプレート・新規作成', () => {
-  const w = W('a', 1, [{ id: 'e', exId: BENCH, note: '肩に注意', sets: [S(40, 10, 'w'), S(80, 8, 'n', true, 8), S(70, 3, 'n', false)] }]);
-  const csv = toCSV([w], exMap).split('\r\n');
-  assert.equal(csv.length, 3);
-  assert.match(csv[2], /ベンチプレス,胸,2,通常セット,80,8,8,101.3,肩に注意/);
-  const txt = workoutToText(w, exMap);
-  assert.match(txt, /■ ベンチプレス/);
-  assert.match(txt, /1\. \[W\] 40kg×10/);
-  assert.match(txt, /2\. 80kg×8 @8/);
-  const t = workoutToTemplate(w, '胸の日');
-  assert.equal(t.entries[0].sets.length, 2);
-  const nw = newWorkout(t);
-  assert.equal(nw.entries[0].sets[0].k, 'w');
-  assert.equal(nw.entries[0].sets[1].w, null);
-  assert.equal(nw.entries[0].sets[1].done, false);
+test('連続日数', () => {
+  assert.equal(streakDays(['2026-10-14', '2026-10-15', '2026-10-16'], '2026-10-16'), 3);
+  assert.equal(streakDays(['2026-10-14', '2026-10-15'], '2026-10-16'), 2, '今日まだでも昨日までは継続');
+  assert.equal(streakDays(['2026-10-13'], '2026-10-16'), 0);
+  assert.equal(addDaysKey('2026-03-01', -1), '2026-02-28');
 });
 
-test('データの補完と単位変換', () => {
-  const st = normalizeState({ settings: { rest: 120 }, workouts: [{ start: 1, entries: [{ exId: 'x1', sets: [{ w: '60', r: 5, done: 1 }] }] }] });
-  assert.equal(st.settings.rest, 120);
-  assert.equal(st.settings.unit, 'kg');
-  assert.ok(st.exercises.length > 10);
-  assert.equal(st.workouts[0].entries[0].sets[0].w, 60);
-  assert.equal(st.workouts[0].entries[0].sets[0].k, 'n');
-  const lb = convertUnits(st, 'lb');
-  assert.equal(lb.settings.unit, 'lb');
-  assert.equal(lb.workouts[0].entries[0].sets[0].w, 132.3);
-  assert.equal(lb.settings.bar, 45);
+test('リアクションの集計', () => {
+  const r = reactionSummary({ a: '😆', b: '🔥', c: '😆', d: null });
+  assert.deepEqual(r, [{ emoji: '😆', uids: ['a', 'c'] }, { emoji: '🔥', uids: ['b'] }]);
 });
 
-test('移動平均', () => {
-  const d = 86400000;
-  const m = movingAvg([{ t: 0, v: 70 }, { t: d, v: 72 }, { t: 10 * d, v: 71 }], 7);
-  assert.deepEqual(m.map((x) => x.v), [70, 71, 71]);
+test('Vlogの構成', () => {
+  const cs = [C('b', '2026-10-16', '09'), C('a', '2026-10-16', '09'), C('a', '2026-10-16', '15')];
+  const tl = vlogSegments(cs, { layout: 'timeline', order: ['a', 'b'] });
+  assert.deepEqual(tl.map((s) => s.type), ['title', 'clip', 'clip', 'clip', 'end']);
+  assert.equal(tl[1].clips[0].uid, 'a', 'メンバー順');
+  const gr = vlogSegments(cs, { layout: 'grid', order: ['a', 'b'] });
+  assert.deepEqual(gr.map((s) => s.type), ['title', 'grid', 'grid', 'end']);
+  assert.equal(gr[1].clips.length, 2);
+  const me = vlogSegments(cs, { layout: 'me', uid: 'b' });
+  assert.equal(me.filter((s) => s.type === 'clip').length, 1);
+  assert.deepEqual(vlogSegments([], {}), []);
+  assert.ok(Math.abs(vlogDuration(tl) - 9.2) < 1e-9);
+  assert.ok(Math.abs(vlogDuration(tl, 2) - 6.2) < 1e-9);
+});
+
+test('分割画面の形', () => {
+  assert.deepEqual(gridDims(1, 1280, 720), { cols: 1, rows: 1 });
+  assert.deepEqual(gridDims(4, 1280, 720), { cols: 2, rows: 2 });
+  assert.deepEqual(gridDims(2, 720, 1130), { cols: 1, rows: 2 });
+  const g = gridDims(12, 720, 1130);
+  assert.ok(g.cols * g.rows >= 12);
+});
+
+test('表示', () => {
+  const now = new Date(2026, 9, 16, 20, 0).getTime();
+  assert.equal(fmtAgo(now - 20e3, now), 'たった今');
+  assert.equal(fmtAgo(now - 5 * 60e3, now), '5分前');
+  assert.equal(fmtAgo(new Date(2026, 9, 15, 9, 5).getTime(), now), '昨日 9:05');
+  assert.equal(cleanName('  えん   どう  '), 'えん どう');
+  assert.equal(dateKey(new Date(2026, 0, 5).getTime()), '2026-01-05');
 });

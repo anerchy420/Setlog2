@@ -1,0 +1,17 @@
+{
+  "indexes": [],
+  "fieldOverrides": [
+    { "collectionGroup": "clips", "fieldPath": "createdAt", "indexes": [
+      { "order": "ASCENDING", "queryScope": "COLLECTION" }, { "order": "DESCENDING", "queryScope": "COLLECTION" },
+      { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" } ] },
+    { "collectionGroup": "clips", "fieldPath": "reactedAt", "indexes": [
+      { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" } ] },
+    { "collectionGroup": "clips", "fieldPath": "thumb", "indexes": [] },
+    { "collectionGroup": "media", "fieldPath": "data", "indexes": [] },
+    { "collectionGroup": "messages", "fieldPath": "createdAt", "indexes": [
+      { "order": "ASCENDING", "queryScope": "COLLECTION" }, { "order": "DESCENDING", "queryScope": "COLLECTION" },
+      { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" } ] },
+    { "collectionGroup": "pokes", "fieldPath": "createdAt", "indexes": [
+      { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" } ] }
+  ]
+}

@@ -1,9 +1,17 @@
 {
-  "name": "SetLog2 筋トレ記録",
-  "short_name": "SetLog2",
+  "name": "setlog2",
+  "short_name": "setlog2",
+  "description": "友だちと1時間ごとの2秒動画で、同じ1日をシェアしてVlogに残す",
   "start_url": "./",
+  "scope": "./",
   "display": "standalone",
-  "background_color": "#0e1013",
-  "theme_color": "#d9480f",
-  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+  "orientation": "any",
+  "background_color": "#f4f4f5",
+  "theme_color": "#ff4fb4",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
 }

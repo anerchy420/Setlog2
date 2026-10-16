@@ -4,6 +4,8 @@
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "start": "npx --yes http-server -p 8080 -c-1 ."
+    "start": "npx --yes http-server -p 8080 -c-1 .",
+    "vapid": "npx --yes web-push generate-vapid-keys",
+    "notify": "node scripts/notify.mjs"
   }
 }
